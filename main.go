@@ -15,7 +15,7 @@ import (
 
 type ReportData struct {
 	miningTime time.Time
-	jpy        float64
+	jpy        int
 }
 
 func main() {
@@ -33,10 +33,12 @@ func main() {
 			Usage: "output report file path",
 		},
 	}
+
 	app.Action = func(c *cli.Context) error {
 		input := c.String("input")
 		output := c.String("output")
 
+		// Validation
 		if input == "" {
 			return fmt.Errorf("Error: %s", "input/i is a required option.")
 		}
@@ -54,7 +56,9 @@ func main() {
 		reader := csv.NewReader(file)
 		reader.ReuseRecord = true
 
-		var data []ReportData
+		// レポートを売上と支出に分割
+		var salsesData []ReportData
+		var costData []ReportData
 
 		var line []string
 		var header = false
@@ -79,17 +83,44 @@ func main() {
 				return fmt.Errorf("Error: %s", err.Error())
 			}
 
-			data = append(data, ReportData{t, f})
+			if f >= 0 {
+				// 売上の場合は小数点以下切り捨て
+				salse := int(math.Floor(f))
+				if salse > 0 {
+					salsesData = append(salsesData, ReportData{t, salse})
+				}
+			} else {
+				// 支出の場合は小数点以下切り上げ
+				cost := int(math.Ceil(f))
+				if cost < 0 {
+					costData = append(costData, ReportData{t, cost})
+				}
+			}
 		}
 
-		set := [][]ReportData{}
-		sliceSize := len(data)
-		for i := 0; i < sliceSize; i += 2 {
-			end := i + 2
-			if sliceSize < end {
-				end = sliceSize
+		// 日毎にまとめる
+		daySales := map[string]int{}
+		dayCost := map[string]int{}
+
+		for _, v := range salsesData {
+			date := v.miningTime.Format("2006-01-02")
+			_, ok := daySales[date]
+
+			if ok {
+				daySales[date] = daySales[date] + v.jpy
+			} else {
+				daySales[date] = v.jpy
 			}
-			set = append(set, data[i:end])
+		}
+		for _, v := range costData {
+			date := v.miningTime.Format("2006-01-02")
+			_, ok := dayCost[date]
+
+			if ok {
+				dayCost[date] = dayCost[date] + v.jpy
+			} else {
+				dayCost[date] = v.jpy
+			}
 		}
 
 		out, err := os.OpenFile(output, os.O_WRONLY|os.O_CREATE, 0600)
@@ -101,16 +132,22 @@ func main() {
 		writer := csv.NewWriter(out)
 		writer.Write([]string{"発生日", "収支区分", "勘定科目", "金額", "税区分", "決済日", "決済口座", "決済金額"})
 
-		for _, v := range set {
-			date := v[0].miningTime.Format("2006-01-02")
+		for k, v := range daySales {
+			amount := strconv.Itoa(v)
 			ty := "収入"
 			ac := "売上高"
-			sum := math.Trunc(v[0].jpy + v[1].jpy)
-			amount := strconv.FormatFloat(sum, 'f', -1, 64)
 			tax := "非課売上"
 			b := "NiceHashMining"
+			writer.Write([]string{k, ty, ac, amount, tax, k, b, amount})
+		}
 
-			writer.Write([]string{date, ty, ac, amount, tax, date, b, amount})
+		for k, v := range dayCost {
+			amount := strconv.Itoa(v * -1)
+			ty := "支出"
+			ac := "支払手数料"
+			tax := "非課仕入"
+			b := "NiceHashMining"
+			writer.Write([]string{k, ty, ac, amount, tax, k, b, amount})
 		}
 		writer.Flush()
 
